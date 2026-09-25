@@ -9,8 +9,15 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import run
+from bot.handlers import BTN_DIGEST, BTN_HOLDING, BTN_INBOX, BTN_PRIORITY, BTN_SMARTS, main_keyboard
 from core.models import Base, Project, ProjectSource, ProjectStatus
 from services import digest
+
+
+class MenuTests(unittest.TestCase):
+    def test_reply_keyboard_has_all_buttons(self):
+        labels = {button.text for row in main_keyboard().keyboard for button in row}
+        self.assertEqual(labels, {BTN_INBOX, BTN_HOLDING, BTN_PRIORITY, BTN_SMARTS, BTN_DIGEST})
 
 
 class SchedulerTests(unittest.TestCase):

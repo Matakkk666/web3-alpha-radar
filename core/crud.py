@@ -65,16 +65,16 @@ async def record_tweet(
     raw_text: str,
     source: ProjectSource,
     event_type: EventType,
-) -> bool:
+) -> int | None:
     if post_url in await get_seen_post_urls(session, [post_url]):
-        return False
+        return None
     session.add(ScannedPost(post_url=post_url))
     if parsed.is_spam or parsed.project_type == "UNKNOWN" or not parsed.project_handle:
-        return False
+        return None
     try:
         handle = normalize_handle(parsed.project_handle)
     except ValueError:
-        return False
+        return None
     project = await _project(session, handle, source)
     if project.project_type is None:
         project.project_type = ProjectType(parsed.project_type)
@@ -93,4 +93,4 @@ async def record_tweet(
         )
     )
     await session.flush()
-    return True
+    return project.id

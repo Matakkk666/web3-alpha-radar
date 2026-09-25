@@ -1,5 +1,6 @@
 """Classify tweets from the configured X list."""
 
+from bot.notify import notify_new_project
 from config.settings import settings
 from core.crud import get_seen_post_urls, record_tweet
 from core.database import async_session
@@ -21,8 +22,11 @@ async def scan_list() -> int:
             continue
         parsed = await parse_text_with_ai(tweet.text)
         async with async_session() as session:
-            added += await record_tweet(
+            project_id = await record_tweet(
                 session, parsed, tweet.url, tweet.text, ProjectSource.LIST, EventType.CALL
             )
             await session.commit()
+        if project_id:
+            added += 1
+            await notify_new_project(project_id)
     return added

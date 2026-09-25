@@ -1,4 +1,4 @@
-"""Alert rendering, inline status buttons and the note FSM."""
+"""Alert rendering, inline status buttons, reply menu and the note FSM."""
 
 from html import escape
 
@@ -7,19 +7,40 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import settings
 from core.database import async_session
-from core.models import FeedEvent, Project, ProjectStatus
+from core.models import FeedEvent, Project, ProjectStatus, SmartAccount
+from services.digest import send_digest
 
 router = Router(name="alerts")
+
+BTN_INBOX = "📥 Inbox"
+BTN_HOLDING = "💎 Holding"
+BTN_PRIORITY = "🔥 Priority"
+BTN_SMARTS = "👁 Smarts"
+BTN_DIGEST = "🗞 Дайджест"
+
+START_TEXT = (
+    "Web3 Alpha Radar онлайн.\n"
+    "Кнопки внизу открывают списки. Новые NFT/POW из листа и ленты придут карточкой."
+)
 
 STATUS_CALLBACKS: dict[str, ProjectStatus] = {
     "status_research": ProjectStatus.RESEARCH,
     "status_wl": ProjectStatus.WL_HUNT,
+    "status_holding": ProjectStatus.HOLDING,
+    "status_inbox": ProjectStatus.INBOX,
     "status_blacklist": ProjectStatus.BLACKLIST,
 }
 
@@ -38,7 +59,16 @@ class NoteStates(StatesGroup):
     waiting_for_text = State()
 
 
-# ---------- Rendering ----------
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_INBOX), KeyboardButton(text=BTN_HOLDING)],
+            [KeyboardButton(text=BTN_PRIORITY), KeyboardButton(text=BTN_SMARTS)],
+            [KeyboardButton(text=BTN_DIGEST)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def build_alert_keyboard(project_id: int) -> InlineKeyboardMarkup:
@@ -47,6 +77,10 @@ def build_alert_keyboard(project_id: int) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="🔍 Research", callback_data=f"status_research:{project_id}"),
                 InlineKeyboardButton(text="🎯 WL-Hunt", callback_data=f"status_wl:{project_id}"),
+            ],
+            [
+                InlineKeyboardButton(text="💎 Holding", callback_data=f"status_holding:{project_id}"),
+                InlineKeyboardButton(text="📥 Inbox", callback_data=f"status_inbox:{project_id}"),
             ],
             [
                 InlineKeyboardButton(text="📝 Заметка", callback_data=f"note:{project_id}"),
@@ -91,6 +125,25 @@ def build_alert_text(project: Project, event: FeedEvent | None = None) -> str:
         lines.append(f"📝 <b>Заметка:</b> <i>{escape(project.notes[:1500])}</i>")
 
     return "\n".join(lines)
+
+
+def _project_line(project: Project) -> str:
+    kind = project.project_type.value if project.project_type else "?"
+    extra = " 💰" if project.is_tier1_backed else ""
+    return (
+        f'<a href="https://x.com/{escape(project.handle)}">@{escape(project.handle)}</a>'
+        f" · {kind} · score {project.score or 0:.0f}{extra}"
+    )
+
+
+def _open_keyboard(projects: list[Project]) -> InlineKeyboardMarkup | None:
+    if not projects:
+        return None
+    rows = [
+        [InlineKeyboardButton(text=f"@{p.handle}", callback_data=f"open:{p.id}")]
+        for p in projects[:10]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _load_event(
@@ -147,14 +200,90 @@ async def _refresh_alert(
             disable_web_page_preview=True,
         )
     except TelegramBadRequest:
-        # "message is not modified" or the message is too old to edit.
         pass
+
+
+async def _send_project_list(message: Message, title: str, statuses: tuple[ProjectStatus, ...]) -> None:
+    async with async_session() as session:
+        rows = (
+            await session.execute(
+                select(Project)
+                .where(Project.status.in_(statuses))
+                .order_by(Project.score.desc(), Project.created_at.desc())
+                .limit(20)
+            )
+        ).scalars().all()
+    if not rows:
+        await message.answer(f"{title} пуст.", reply_markup=main_keyboard())
+        return
+    text = f"<b>{title}</b>\n" + "\n".join(_project_line(p) for p in rows)
+    await message.answer(text, reply_markup=_open_keyboard(rows), disable_web_page_preview=True)
+
+
+# ---------- Menu ----------
+
+
+@router.message(Command("start", "help"))
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(START_TEXT, reply_markup=main_keyboard())
+
+
+@router.message(F.text == BTN_INBOX)
+async def cmd_inbox(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _send_project_list(message, "Inbox", (ProjectStatus.INBOX,))
+
+
+@router.message(F.text == BTN_HOLDING)
+async def cmd_holding(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _send_project_list(message, "Holding", (ProjectStatus.HOLDING,))
+
+
+@router.message(F.text == BTN_PRIORITY)
+async def cmd_priority(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _send_project_list(message, "Priority", (ProjectStatus.HIGH_PRIORITY,))
+
+
+@router.message(F.text == BTN_SMARTS)
+async def cmd_smarts(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    async with async_session() as session:
+        rows = (
+            await session.execute(select(SmartAccount).order_by(SmartAccount.tier, SmartAccount.handle))
+        ).scalars().all()
+    if not rows:
+        await message.answer("Смартов нет. Запусти seed_db.py.", reply_markup=main_keyboard())
+        return
+    lines = [f"T{s.tier} @{escape(s.handle)}" + ("" if s.is_active else " (off)") for s in rows]
+    await message.answer("\n".join(lines), reply_markup=main_keyboard())
+
+
+@router.message(F.text == BTN_DIGEST)
+async def cmd_digest(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    count = await send_digest(message.bot)
+    await message.answer(f"Дайджест отправлен ({count} проектов).", reply_markup=main_keyboard())
+
+
+@router.callback_query(F.data.regexp(r"^open:\d+$"))
+async def on_open_project(callback: CallbackQuery, bot: Bot) -> None:
+    _, project_id = _split_callback(callback.data)
+    sent = await send_alert(bot, project_id)
+    if sent is None:
+        await callback.answer("Проект не найден", show_alert=True)
+        return
+    await callback.answer()
 
 
 # ---------- Status buttons ----------
 
 
-@router.callback_query(F.data.regexp(r"^(status_research|status_wl|status_blacklist):\d+$"))
+@router.callback_query(
+    F.data.regexp(r"^(status_research|status_wl|status_holding|status_inbox|status_blacklist):\d+$")
+)
 async def on_status_change(callback: CallbackQuery, bot: Bot) -> None:
     action, project_id = _split_callback(callback.data)
     new_status = STATUS_CALLBACKS[action]
@@ -202,13 +331,14 @@ async def on_note_request(callback: CallbackQuery, state: FSMContext, bot: Bot) 
             f"📝 Напишите заметку для <b>@{escape(project.handle)}</b>.\n"
             "Следующее сообщение будет сохранено. /cancel — отмена."
         ),
+        reply_markup=main_keyboard(),
     )
 
 
 @router.message(StateFilter(NoteStates.waiting_for_text), Command("cancel"))
 async def on_note_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("❌ Заметка отменена.")
+    await message.answer("❌ Заметка отменена.", reply_markup=main_keyboard())
 
 
 @router.message(StateFilter(NoteStates.waiting_for_text), F.text)
@@ -220,13 +350,16 @@ async def on_note_text(message: Message, state: FSMContext, bot: Bot) -> None:
     async with async_session() as session:
         project = await session.get(Project, project_id) if project_id else None
         if project is None:
-            await message.answer("Проект не найден, заметка не сохранена.")
+            await message.answer("Проект не найден, заметка не сохранена.", reply_markup=main_keyboard())
             return
         project.notes = message.text
         await session.commit()
         event = await _load_event(session, project_id)
 
-    await message.answer(f"✅ Заметка для <b>@{escape(project.handle)}</b> сохранена.")
+    await message.answer(
+        f"✅ Заметка для <b>@{escape(project.handle)}</b> сохранена.",
+        reply_markup=main_keyboard(),
+    )
     await _refresh_alert(
         bot, data.get("alert_chat_id"), data.get("alert_message_id"), project, event
     )

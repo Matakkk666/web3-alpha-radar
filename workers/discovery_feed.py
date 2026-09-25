@@ -1,5 +1,6 @@
 """Warm up the X feed and harvest promising For You posts."""
 
+from bot.notify import notify_new_project
 from core.crud import get_seen_post_urls, record_tweet
 from core.database import async_session
 from core.models import EventType, ProjectSource
@@ -27,10 +28,13 @@ async def _store(tweets: list[Tweet]) -> int:
             continue
         parsed = await parse_text_with_ai(tweet.text)
         async with async_session() as session:
-            added += await record_tweet(
+            project_id = await record_tweet(
                 session, parsed, tweet.url, tweet.text, ProjectSource.DISCOVERY, EventType.DISCOVERY
             )
             await session.commit()
+        if project_id:
+            added += 1
+            await notify_new_project(project_id)
     return added
 
 

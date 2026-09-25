@@ -9,7 +9,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from bot.handlers import START_TEXT, main_keyboard
 from bot.main_bot import create_bot, create_dispatcher
+from bot.notify import bind_bot
 from config.settings import settings
 from core.database import init_db
 from services.digest import send_digest
@@ -80,6 +82,7 @@ async def main() -> None:
 
     await init_db()
     bot = create_bot()
+    bind_bot(bot)
     dp = create_dispatcher()
     scheduler = create_scheduler(bot)
     scheduler.start()
@@ -87,7 +90,8 @@ async def main() -> None:
         logger.info("Scheduled %s: next run %s", job.id, job.next_run_time)
     await bot.send_message(
         settings.admin_id,
-        "Web3 Alpha Radar запущен. Сканер листа, трекер смартов и discovery работают по расписанию.",
+        START_TEXT,
+        reply_markup=main_keyboard(),
         disable_web_page_preview=True,
     )
     try:
