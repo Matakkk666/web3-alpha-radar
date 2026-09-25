@@ -1,0 +1,9 @@
+aiogram>=3.4.0
+SQLAlchemy[asyncio]>=2.0
+aiosqlite
+playwright
+google-genai
+pydantic
+python-dotenv
+APScheduler
+tzdata
