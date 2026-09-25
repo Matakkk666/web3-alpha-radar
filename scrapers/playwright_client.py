@@ -180,18 +180,22 @@ class XScraper:
         visit(payload)
         return list(tweets.values())[:20]
 
-    async def _collect_tweets(self, url: str, for_you: bool = False) -> list[Tweet]:
+    async def _collect_tweets(
+        self, url: str, for_you: bool = False, operations: tuple[str, ...] | None = None
+    ) -> list[Tweet]:
         if self._context is None:
             raise RuntimeError("Open XScraper before requesting tweets")
+        if for_you:
+            operations = ("HomeTimeline", "ForYouTimeline")
         page = await self._context.new_page()
         tweets: dict[str, Tweet] = {}
         received = asyncio.Event()
 
         async def on_response(response: Response) -> None:
             path = urlsplit(response.url).path
-            if "/graphql/" not in path or (for_you and path.rsplit("/", 1)[-1] not in (
-                "HomeTimeline", "ForYouTimeline"
-            )):
+            if "/graphql/" not in path or (
+                operations is not None and path.rsplit("/", 1)[-1] not in operations
+            ):
                 return
             try:
                 for tweet in self._tweets(await response.json()):
@@ -245,3 +249,12 @@ class XScraper:
 
     async def get_for_you_tweets(self) -> list[Tweet]:
         return await self._collect_tweets("https://x.com/home", for_you=True)
+
+    async def get_user_tweets(self, handle: str) -> list[Tweet]:
+        """Latest tweets authored by ``handle`` (retweeted/quoted tweets of others are dropped)."""
+        handle = handle.removeprefix("@")
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+            raise ValueError("Invalid X handle")
+        tweets = await self._collect_tweets(f"https://x.com/{handle}", operations=("UserTweets",))
+        prefix = f"https://x.com/{handle.lower()}/status/"
+        return [tweet for tweet in tweets if tweet.url.lower().startswith(prefix)]

@@ -26,7 +26,7 @@ class SchedulerTests(unittest.TestCase):
         jobs = {job.id: job for job in run.create_scheduler(bot).get_jobs()}
         self.assertEqual(
             set(jobs),
-            {"smart_tracker", "lists_scanner", "discovery_harvest", "discovery_warmup", "digest"},
+            {"smart_tracker", "lists_scanner", "discovery_harvest", "discovery_warmup", "fast_track", "digest"},
         )
         intervals = {
             job_id: jobs[job_id].trigger.interval
@@ -35,6 +35,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(intervals["smart_tracker"], timedelta(minutes=20))
         self.assertEqual(intervals["lists_scanner"], timedelta(minutes=4))
         self.assertEqual(intervals["discovery_harvest"], timedelta(hours=3))
+        self.assertEqual(jobs["fast_track"].trigger.interval, timedelta(minutes=2))
         self.assertIsInstance(jobs["discovery_warmup"].trigger, CronTrigger)
         self.assertIn("hour='6'", str(jobs["discovery_warmup"].trigger))
         self.assertIsInstance(jobs["digest"].trigger, CronTrigger)

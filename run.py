@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from functools import partial
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -14,6 +15,7 @@ from bot.main_bot import create_bot, create_dispatcher
 from bot.notify import bind_bot
 from config.settings import settings
 from core.database import init_db
+from scrapers.fast_scanner import fast_track_worker
 from services.digest import send_digest
 from workers.discovery_feed import harvest, warmup
 from workers.lists_scanner import scan_list
@@ -56,6 +58,7 @@ def create_scheduler(bot: Bot) -> AsyncIOScheduler:
         ("lists_scanner", scan_list, IntervalTrigger(minutes=4, timezone=tz)),
         ("discovery_harvest", harvest, IntervalTrigger(hours=3, timezone=tz)),
         ("discovery_warmup", warmup, CronTrigger(hour=6, minute=0, timezone=tz)),
+        ("fast_track", partial(fast_track_worker, bot), IntervalTrigger(minutes=2, timezone=tz)),
     )
     for job_id, worker, trigger in jobs:
         scheduler.add_job(

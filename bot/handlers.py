@@ -4,7 +4,7 @@ from html import escape
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -19,9 +19,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import settings
+from core.crud import add_fast_track_account, get_all_smart_accounts, remove_fast_track_account
 from core.database import async_session
-from core.models import FeedEvent, Project, ProjectStatus, SmartAccount
-from services.digest import send_digest
+from core.models import FeedEvent, Project, ProjectStatus
+from services.digest import _chunks, send_digest
 
 router = Router(name="alerts")
 
@@ -33,7 +34,10 @@ BTN_DIGEST = "🗞 Дайджест"
 
 START_TEXT = (
     "Web3 Alpha Radar онлайн.\n"
-    "Кнопки внизу открывают списки. Новые NFT/POW из листа и ленты придут карточкой."
+    "Кнопки внизу открывают списки.\n"
+    "/add @user — Fast-Track (новые твиты сразу)\n"
+    "/remove @user — убрать из Fast-Track\n"
+    "/list — кто на отслеживании"
 )
 
 STATUS_CALLBACKS: dict[str, ProjectStatus] = {
@@ -251,13 +255,14 @@ async def cmd_priority(message: Message, state: FSMContext) -> None:
 async def cmd_smarts(message: Message, state: FSMContext) -> None:
     await state.clear()
     async with async_session() as session:
-        rows = (
-            await session.execute(select(SmartAccount).order_by(SmartAccount.tier, SmartAccount.handle))
-        ).scalars().all()
+        rows = await get_all_smart_accounts(session)
     if not rows:
         await message.answer("Смартов нет. Запусти seed_db.py.", reply_markup=main_keyboard())
         return
-    lines = [f"T{s.tier} @{escape(s.handle)}" + ("" if s.is_active else " (off)") for s in rows]
+    lines = []
+    for s in rows:
+        marks = ("⚡" if s.is_fast_track else "") + ("👁" if s.is_active else "")
+        lines.append(f"{marks or '⏸'} @{escape(s.handle)} · T{s.tier}")
     await message.answer("\n".join(lines), reply_markup=main_keyboard())
 
 
@@ -302,6 +307,68 @@ async def on_status_change(callback: CallbackQuery, bot: Bot) -> None:
     await _refresh_alert(
         bot, msg.chat.id if msg else None, msg.message_id if msg else None, project, event
     )
+
+
+# ---------- Fast-Track ----------
+
+_admin_only = F.from_user.id == settings.admin_id
+
+
+@router.message(Command("add"), _admin_only)
+async def on_add(message: Message, command: CommandObject) -> None:
+    if not command.args:
+        await message.answer("Использование: /add @username")
+        return
+    async with async_session() as session:
+        try:
+            account, _ = await add_fast_track_account(session, command.args.split()[0])
+        except ValueError:
+            await message.answer("❌ Некорректный юзернейм X.")
+            return
+        await session.commit()
+    await message.answer(
+        f"✅ Аккаунт @{escape(account.handle)} добавлен в Fast-Track. "
+        "Новые посты будут приходить моментально."
+    )
+
+
+@router.message(Command("remove"), _admin_only)
+async def on_remove(message: Message, command: CommandObject) -> None:
+    if not command.args:
+        await message.answer("Использование: /remove @username")
+        return
+    async with async_session() as session:
+        try:
+            account = await remove_fast_track_account(session, command.args.split()[0])
+        except ValueError:
+            await message.answer("❌ Некорректный юзернейм X.")
+            return
+        await session.commit()
+    if account is None:
+        await message.answer("Этого аккаунта нет в Fast-Track.")
+    elif account.is_active:
+        await message.answer(
+            f"🗑 @{escape(account.handle)} убран из Fast-Track (отслеживание подписок сохранено)."
+        )
+    else:
+        await message.answer(f"🗑 @{escape(account.handle)} удалён из отслеживаемых.")
+
+
+@router.message(Command("list"), _admin_only)
+async def on_list(message: Message) -> None:
+    async with async_session() as session:
+        accounts = await get_all_smart_accounts(session)
+    if not accounts:
+        await message.answer("Список отслеживаемых аккаунтов пуст. Добавьте: /add @username")
+        return
+    fast = sum(a.is_fast_track for a in accounts)
+    lines = [f"📋 Отслеживаемые аккаунты ({len(accounts)}, ⚡ Fast-Track: {fast})", ""]
+    for a in accounts:
+        marks = ("⚡" if a.is_fast_track else "") + ("👁" if a.is_active else "")
+        lines.append(f"{marks or '⏸'} @{escape(a.handle)} · T{a.tier}")
+    lines += ["", "⚡ Fast-Track · 👁 подписки · ⏸ выключен"]
+    for chunk in _chunks("\n".join(lines)):
+        await message.answer(chunk)
 
 
 # ---------- Note FSM ----------

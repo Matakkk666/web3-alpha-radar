@@ -87,6 +87,8 @@ class SmartAccount(Base):
     handle: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     tier: Mapped[int] = mapped_column(Integer, default=2)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_fast_track: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    last_tweet_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     events: Mapped[list["FeedEvent"]] = relationship(back_populates="smart_account")
 

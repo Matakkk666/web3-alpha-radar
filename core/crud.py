@@ -2,7 +2,7 @@
 
 import re
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.models import EventType, FeedEvent, Project, ProjectSource, ProjectType, ScannedPost, SmartAccount
@@ -18,6 +18,60 @@ def normalize_handle(handle: str) -> str:
 
 async def get_active_smart_accounts(session: AsyncSession) -> list[SmartAccount]:
     return list((await session.scalars(select(SmartAccount).where(SmartAccount.is_active))).all())
+
+
+async def _smart_account_by_handle(session: AsyncSession, handle: str) -> SmartAccount | None:
+    return await session.scalar(select(SmartAccount).where(func.lower(SmartAccount.handle) == handle))
+
+
+async def get_all_smart_accounts(session: AsyncSession) -> list[SmartAccount]:
+    return list(
+        (
+            await session.scalars(
+                select(SmartAccount).order_by(
+                    SmartAccount.is_fast_track.desc(), SmartAccount.tier, func.lower(SmartAccount.handle)
+                )
+            )
+        ).all()
+    )
+
+
+async def get_fast_track_accounts(session: AsyncSession) -> list[SmartAccount]:
+    return list((await session.scalars(select(SmartAccount).where(SmartAccount.is_fast_track))).all())
+
+
+async def add_fast_track_account(session: AsyncSession, handle: str) -> tuple[SmartAccount, bool]:
+    """Enables fast-track for ``handle``; returns (account, created). Raises ValueError on bad handle."""
+    handle = normalize_handle(handle)
+    account = await _smart_account_by_handle(session, handle)
+    if account is not None:
+        account.is_fast_track = True
+        await session.flush()
+        return account, False
+    account = SmartAccount(handle=handle, is_active=False, is_fast_track=True)
+    session.add(account)
+    await session.flush()
+    return account, True
+
+
+async def remove_fast_track_account(session: AsyncSession, handle: str) -> SmartAccount | None:
+    """Disables fast-track; deletes the account if nothing else tracks it. None if not fast-tracked."""
+    account = await _smart_account_by_handle(session, normalize_handle(handle))
+    if account is None or not account.is_fast_track:
+        return None
+    account.is_fast_track = False
+    account.last_tweet_id = None
+    if not account.is_active:
+        await session.delete(account)
+    await session.flush()
+    return account
+
+
+async def set_last_tweet_id(session: AsyncSession, account_id: int, tweet_id: str) -> None:
+    account = await session.get(SmartAccount, account_id)
+    if account is not None and account.is_fast_track:
+        account.last_tweet_id = tweet_id
+        await session.flush()
 
 
 async def get_seen_post_urls(session: AsyncSession, urls: list[str]) -> set[str]:
