@@ -29,7 +29,9 @@ class XScraper:
         url = urlsplit(settings.proxy_url)
         if not url.scheme or not url.hostname:
             raise ValueError("PROXY_URL must include a scheme and hostname")
-        server = f"{url.scheme}://{url.netloc.rsplit('@', 1)[-1]}"
+        # Chromium/Playwright accept http(s) and socks5, not socks5h.
+        scheme = {"socks5h": "socks5", "socks4a": "socks5"}.get(url.scheme.lower(), url.scheme)
+        server = f"{scheme}://{url.netloc.rsplit('@', 1)[-1]}"
         proxy = {"server": server}
         if url.username is not None:
             proxy["username"] = unquote(url.username)

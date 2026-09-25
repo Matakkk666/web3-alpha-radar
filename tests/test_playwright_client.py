@@ -36,6 +36,13 @@ def following_payload(names):
 
 
 class XScraperTests(unittest.IsolatedAsyncioTestCase):
+    def test_socks5h_is_mapped_to_socks5(self):
+        with patch("scrapers.playwright_client.settings.proxy_url", "socks5h://user:p%40ss@proxy.test:1080"):
+            self.assertEqual(
+                XScraper._proxy(),
+                {"server": "socks5://proxy.test:1080", "username": "user", "password": "p@ss"},
+            )
+
     def test_first_twenty_unique_names(self):
         names = [f"user{i}" for i in range(23)]
         payload = following_payload(["User0", "user0", *names[1:]])
