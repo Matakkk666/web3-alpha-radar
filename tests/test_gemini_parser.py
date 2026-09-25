@@ -49,7 +49,7 @@ class GeminiParserTests(unittest.TestCase):
         client_factory.assert_called_once_with(api_key="test-key")
         async_client.__aexit__.assert_awaited_once()
         kwargs = models.generate_content.await_args.kwargs
-        self.assertEqual(kwargs["model"], "gemini-1.5-flash")
+        self.assertEqual(kwargs["model"], "gemini-3.6-flash")
         self.assertEqual(kwargs["contents"], "New miner @miner uses RandomX")
         self.assertEqual(kwargs["config"].response_mime_type, "application/json")
         self.assertIs(kwargs["config"].response_schema, ParsedTweet)

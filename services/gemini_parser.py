@@ -39,7 +39,7 @@ async def parse_text_with_ai(text: str) -> ParsedTweet:
 
     async with genai.Client(api_key=settings.gemini_api_key).aio as client:
         response = await client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-3.6-flash",
             contents=text,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
