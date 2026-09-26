@@ -203,7 +203,8 @@ class UserTweetsTests(unittest.IsolatedAsyncioTestCase):
         scraper._collect_tweets = AsyncMock(return_value=[tw("Alpha", 2), tw("other", 3)])
         self.assertEqual(await scraper.get_user_tweets("@alpha"), [tw("Alpha", 2)])
         scraper._collect_tweets.assert_awaited_once_with(
-            "https://x.com/alpha", operations=("UserTweets",)
+            "https://x.com/alpha",
+            operations=("UserTweets", "UserTweetsAndReplies"),
         )
         with self.assertRaises(ValueError):
             await scraper.get_user_tweets("bad handle")

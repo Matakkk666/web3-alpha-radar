@@ -116,11 +116,31 @@ class XScraperTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await scraper.get_following_list("@example"), ["alpha", "beta"])
 
         self.assertEqual(events[0], ("cookies", [
-            {"name": "auth_token", "value": "test-token", "domain": ".x.com", "path": "/"}
+            {
+                "name": "auth_token",
+                "value": "test-token",
+                "domain": ".x.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+            },
+            {
+                "name": "auth_token",
+                "value": "test-token",
+                "domain": ".twitter.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+            },
         ]))
         self.assertEqual(events[1], ("goto", "https://x.com/example/following"))
         playwright.chromium.launch.assert_awaited_once_with(
             headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-http2",
+                "--disable-quic",
+            ],
             proxy={"server": "http://proxy.test:3128", "username": "user", "password": "p@ss"},
         )
         page.close.assert_awaited_once()

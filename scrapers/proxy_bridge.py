@@ -10,6 +10,7 @@ import asyncio
 import logging
 from urllib.parse import quote, unquote, urlsplit
 
+from python_socks import ProxyError
 from python_socks.async_.asyncio import Proxy
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 _server: asyncio.AbstractServer | None = None
 _port: int | None = None
 _lock = asyncio.Lock()
+_connect_sem = asyncio.Semaphore(4)
 
 
 def normalized_upstream(proxy_url: str) -> str:
@@ -59,6 +61,7 @@ async def _pipe(src: asyncio.StreamReader, dest: asyncio.StreamWriter) -> None:
 
 
 async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, upstream: str) -> None:
+    target = "?"
     try:
         header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=15)
         first = header.split(b"\r\n", 1)[0].decode("latin-1")
@@ -70,18 +73,27 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, up
         host, port_s = target.rsplit(":", 1)
         dest_host = host.strip("[]")
         dest_port = int(port_s)
-        sock = await Proxy.from_url(upstream).connect(dest_host=dest_host, dest_port=dest_port)
+        if dest_port not in {80, 443}:
+            writer.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            return
+        async with _connect_sem:
+            sock = await Proxy.from_url(upstream, rdns=True).connect(
+                dest_host=dest_host, dest_port=dest_port
+            )
         writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         await writer.drain()
         remote_reader, remote_writer = await asyncio.open_connection(sock=sock)
         await asyncio.gather(_pipe(reader, remote_writer), _pipe(remote_reader, writer))
-    except Exception:
-        logger.exception("HTTP/SOCKS bridge request failed")
+    except ProxyError as exc:
+        logger.warning("SOCKS CONNECT %s failed: %s", target, exc)
         try:
             writer.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
             await writer.drain()
         except Exception:
             pass
+    except Exception:
+        logger.exception("HTTP/SOCKS bridge request failed target=%s", target)
     finally:
         try:
             writer.close()

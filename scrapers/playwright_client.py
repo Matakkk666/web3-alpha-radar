@@ -59,10 +59,23 @@ class XScraper:
             playwright = await stack.enter_async_context(async_playwright())
             proxy = await self._playwright_proxy()
             browser = await playwright.chromium.launch(
-                headless=True, **({"proxy": proxy} if proxy else {})
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-http2",
+                    "--disable-quic",
+                ],
+                **({"proxy": proxy} if proxy else {}),
             )
             stack.push_async_callback(browser.close)
-            self._context = await browser.new_context()
+            self._context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                locale="en-US",
+            )
             stack.push_async_callback(self._context.close)
             await self.load_auth_cookie(settings.auth_token)
         except BaseException:
@@ -84,7 +97,17 @@ class XScraper:
         if not auth_token_value:
             raise ValueError("auth_token cannot be empty")
         await self._context.add_cookies(
-            [{"name": "auth_token", "value": auth_token_value, "domain": ".x.com", "path": "/"}]
+            [
+                {
+                    "name": "auth_token",
+                    "value": auth_token_value,
+                    "domain": domain,
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": True,
+                }
+                for domain in (".x.com", ".twitter.com")
+            ]
         )
 
     @staticmethod
@@ -151,7 +174,7 @@ class XScraper:
         page.on("response", on_response)
         try:
             await page.goto(f"https://x.com/{handle}/following", wait_until="domcontentloaded")
-            return await asyncio.wait_for(result, timeout=15)
+            return await asyncio.wait_for(result, timeout=45)
         finally:
             page.remove_listener("response", on_response)
             await page.close()
@@ -206,7 +229,7 @@ class XScraper:
         async def on_response(response: Response) -> None:
             path = urlsplit(response.url).path
             if "/graphql/" not in path or (
-                operations is not None and path.rsplit("/", 1)[-1] not in operations
+                operations is not None and path.rsplit("/", 1)[-1].split("?")[0] not in operations
             ):
                 return
             try:
@@ -222,7 +245,11 @@ class XScraper:
             await page.goto(url, wait_until="domcontentloaded")
             if for_you:
                 await page.get_by_role("tab", name="For you", exact=True).click()
-            await asyncio.wait_for(received.wait(), timeout=15)
+            try:
+                await asyncio.wait_for(received.wait(), timeout=45)
+            except TimeoutError:
+                if not tweets:
+                    raise
             return list(tweets.values())[:20]
         finally:
             page.remove_listener("response", on_response)
@@ -267,6 +294,9 @@ class XScraper:
         handle = handle.removeprefix("@")
         if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
             raise ValueError("Invalid X handle")
-        tweets = await self._collect_tweets(f"https://x.com/{handle}", operations=("UserTweets",))
+        tweets = await self._collect_tweets(
+            f"https://x.com/{handle}",
+            operations=("UserTweets", "UserTweetsAndReplies"),
+        )
         prefix = f"https://x.com/{handle.lower()}/status/"
         return [tweet for tweet in tweets if tweet.url.lower().startswith(prefix)]
