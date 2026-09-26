@@ -153,6 +153,47 @@ class TweetExtractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(XScraper._tweets({"entries": [tweet, tweet]}),
                          [Tweet("new NFT", "https://x.com/author/status/123")])
 
+    def test_tweets_with_core_null_and_visibility_wrapper(self):
+        payload = {
+            "data": {
+                "list": {
+                    "tweets_timeline": {
+                        "timeline": {
+                            "instructions": [{
+                                "entries": [{
+                                    "content": {
+                                        "itemContent": {
+                                            "tweet_results": {
+                                                "result": {
+                                                    "__typename": "TweetWithVisibilityResults",
+                                                    "tweet": {
+                                                        "rest_id": 99,
+                                                        "legacy": {"full_text": "list call"},
+                                                        "core": {
+                                                            "user_results": {
+                                                                "result": {
+                                                                    "legacy": {},
+                                                                    "core": {"screen_name": "alpha"},
+                                                                }
+                                                            }
+                                                        },
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }]
+                            }]
+                        }
+                    }
+                }
+            }
+        }
+        self.assertEqual(
+            XScraper._tweets(payload),
+            [Tweet("list call", "https://x.com/alpha/status/99")],
+        )
+
     async def test_reject_non_list_url(self):
         scraper = XScraper()
         with self.assertRaises(ValueError):

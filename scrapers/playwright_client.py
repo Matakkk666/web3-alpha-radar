@@ -14,6 +14,15 @@ from scrapers.proxy_bridge import ensure_bridge, proxy_host_allowed, socks_needs
 
 logger = logging.getLogger(__name__)
 
+_TIMELINE_OPS = {
+    "UserTweets",
+    "UserTweetsAndReplies",
+    "ListLatestTweetsTimeline",
+    "HomeTimeline",
+    "ForYouTimeline",
+    "SearchTimeline",
+}
+
 
 @dataclass(frozen=True)
 class Tweet:
@@ -195,31 +204,46 @@ class XScraper:
     def _tweets(payload: object) -> list[Tweet]:
         tweets: dict[str, Tweet] = {}
 
+        def handle_of(result: dict) -> str | None:
+            user = ((result.get("core") or {}).get("user_results") or {}).get("result") or {}
+            legacy_user = user.get("legacy") or {}
+            core_user = user.get("core") or {}
+            name = legacy_user.get("screen_name") or core_user.get("screen_name")
+            return name if isinstance(name, str) else None
+
+        def text_of(result: dict) -> str | None:
+            legacy = result.get("legacy") or {}
+            note = ((result.get("note_tweet") or {}).get("note_tweet_results") or {}).get("result") or {}
+            text = legacy.get("full_text") or legacy.get("text") or note.get("text")
+            return text.strip() if isinstance(text, str) and text.strip() else None
+
+        def id_of(result: dict) -> str | None:
+            raw = result.get("rest_id") or (result.get("legacy") or {}).get("id_str")
+            if isinstance(raw, int):
+                raw = str(raw)
+            return raw if isinstance(raw, str) and raw.isdigit() else None
+
+        def add(result: object) -> None:
+            if not isinstance(result, dict):
+                return
+            result = result.get("tweet") or result
+            handle = handle_of(result)
+            tweet_id = id_of(result)
+            text = text_of(result)
+            if handle and re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle) and tweet_id and text:
+                url = f"https://x.com/{handle}/status/{tweet_id}"
+                tweets[url] = Tweet(text=text, url=url)
+
         def visit(node: object) -> None:
             if isinstance(node, list):
                 for item in node:
                     visit(item)
             elif isinstance(node, dict):
-                result = node.get("tweet_results", {}).get("result") if isinstance(
-                    node.get("tweet_results"), dict
-                ) else None
-                if isinstance(result, dict):
-                    result = result.get("tweet") or result
-                    legacy = result.get("legacy") or {}
-                    user = (result.get("core") or {}).get("user_results") or {}
-                    author = (user.get("result") or {}).get("legacy") or {}
-                    handle = author.get("screen_name") or (user.get("result") or {}).get(
-                        "core", {}
-                    ).get("screen_name")
-                    tweet_id = result.get("rest_id") or legacy.get("id_str")
-                    text = legacy.get("full_text")
-                    if (
-                        isinstance(handle, str) and re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle)
-                        and isinstance(tweet_id, str) and tweet_id.isdigit()
-                        and isinstance(text, str) and text.strip()
-                    ):
-                        url = f"https://x.com/{handle}/status/{tweet_id}"
-                        tweets[url] = Tweet(text=text, url=url)
+                packed = node.get("tweet_results") or node.get("tweet_result")
+                if isinstance(packed, dict):
+                    add(packed.get("result"))
+                elif node.get("__typename") in {"Tweet", "TweetWithVisibilityResults"}:
+                    add(node)
                 for value in node.values():
                     if isinstance(value, (dict, list)):
                         visit(value)
@@ -268,8 +292,10 @@ class XScraper:
         tweets: dict[str, Tweet] = {}
         received = asyncio.Event()
         graphql_ops: list[str] = []
+        timeline_ok = False
 
         async def on_response(response: Response) -> None:
+            nonlocal timeline_ok
             path = urlsplit(response.url).path
             if "/graphql/" not in path:
                 return
@@ -280,6 +306,8 @@ class XScraper:
             try:
                 for tweet in self._tweets(await response.json()):
                     tweets[tweet.url] = tweet
+                if op in _TIMELINE_OPS or operations is not None:
+                    timeline_ok = True
                 if tweets:
                     received.set()
             except Exception:
@@ -297,7 +325,7 @@ class XScraper:
             if not tweets:
                 for tweet in await self._tweets_from_dom(page):
                     tweets[tweet.url] = tweet
-            if not tweets:
+            if not tweets and not timeline_ok:
                 logger.warning(
                     "No tweets at %s title=%r graphql=%s",
                     url,
