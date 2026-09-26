@@ -9,6 +9,7 @@ from urllib.parse import quote, unquote, urlsplit
 from playwright.async_api import BrowserContext, Page, Response, async_playwright
 
 from config.settings import settings
+from scrapers.proxy_bridge import ensure_bridge, socks_needs_http_bridge
 
 
 @dataclass(frozen=True)
@@ -29,8 +30,11 @@ class XScraper:
         url = urlsplit(settings.proxy_url)
         if not url.scheme or not url.hostname:
             raise ValueError("PROXY_URL must include a scheme and hostname")
-        # Chromium/Playwright accept http(s) and socks5, not socks5h.
+        # Chromium accepts http(s) auth and SOCKS5 without auth. SOCKS5+user/pass
+        # is forwarded through a local HTTP CONNECT bridge.
         scheme = {"socks5h": "socks5", "socks4a": "socks5"}.get(url.scheme.lower(), url.scheme)
+        if scheme.lower().startswith("socks") and url.username:
+            return None
         server = f"{scheme}://{url.netloc.rsplit('@', 1)[-1]}"
         proxy = {"server": server}
         if url.username is not None:
@@ -38,6 +42,12 @@ class XScraper:
         if url.password is not None:
             proxy["password"] = unquote(url.password)
         return proxy
+
+    async def _playwright_proxy(self) -> dict[str, str] | None:
+        if socks_needs_http_bridge(settings.proxy_url):
+            port = await ensure_bridge(settings.proxy_url)
+            return {"server": f"http://127.0.0.1:{port}"}
+        return self._proxy()
 
     async def __aenter__(self) -> "XScraper":
         if not settings.auth_token:
@@ -47,7 +57,7 @@ class XScraper:
         stack = AsyncExitStack()
         try:
             playwright = await stack.enter_async_context(async_playwright())
-            proxy = self._proxy()
+            proxy = await self._playwright_proxy()
             browser = await playwright.chromium.launch(
                 headless=True, **({"proxy": proxy} if proxy else {})
             )

@@ -6,4 +6,4 @@ google-genai
 pydantic
 python-dotenv
 APScheduler
-tzdata
+python-socks[asyncio]

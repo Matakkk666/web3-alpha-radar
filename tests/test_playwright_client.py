@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from scrapers.playwright_client import XScraper
+from scrapers.proxy_bridge import normalized_upstream, socks_needs_http_bridge
 
 
 def following_payload(names):
@@ -36,11 +37,18 @@ def following_payload(names):
 
 
 class XScraperTests(unittest.IsolatedAsyncioTestCase):
-    def test_socks5h_is_mapped_to_socks5(self):
-        with patch("scrapers.playwright_client.settings.proxy_url", "socks5h://user:p%40ss@proxy.test:1080"):
+    def test_socks5h_with_auth_uses_bridge_not_chromium_socks(self):
+        raw = "socks5h://user:p%40ss@proxy.test:1080"
+        with patch("scrapers.playwright_client.settings.proxy_url", raw):
+            self.assertTrue(socks_needs_http_bridge(raw))
+            self.assertIsNone(XScraper._proxy())
+        self.assertEqual(normalized_upstream(raw), "socks5://user:p%40ss@proxy.test:1080")
+
+    def test_http_proxy_still_passed_to_chromium(self):
+        with patch("scrapers.playwright_client.settings.proxy_url", "http://user:p%40ss@proxy.test:3128"):
             self.assertEqual(
                 XScraper._proxy(),
-                {"server": "socks5://proxy.test:1080", "username": "user", "password": "p@ss"},
+                {"server": "http://proxy.test:3128", "username": "user", "password": "p@ss"},
             )
 
     def test_first_twenty_unique_names(self):
