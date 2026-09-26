@@ -1,15 +1,18 @@
 """Browser client for reading the first page of an X account's following list."""
 
 import asyncio
+import logging
 import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from urllib.parse import quote, unquote, urlsplit
 
-from playwright.async_api import BrowserContext, Page, Response, async_playwright
+from playwright.async_api import BrowserContext, Page, Response, Route, async_playwright
 
 from config.settings import settings
-from scrapers.proxy_bridge import ensure_bridge, socks_needs_http_bridge
+from scrapers.proxy_bridge import ensure_bridge, proxy_host_allowed, socks_needs_http_bridge
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,7 @@ class XScraper:
                 locale="en-US",
             )
             stack.push_async_callback(self._context.close)
+            await self._context.route("**/*", self._filter_route)
             await self.load_auth_cookie(settings.auth_token)
         except BaseException:
             await stack.aclose()
@@ -90,6 +94,14 @@ class XScraper:
             await self._stack.aclose()
             self._stack = None
             self._context = None
+
+    @staticmethod
+    async def _filter_route(route: Route) -> None:
+        host = urlsplit(route.request.url).hostname
+        if proxy_host_allowed(host):
+            await route.continue_()
+        else:
+            await route.abort()
 
     async def load_auth_cookie(self, auth_token_value: str) -> None:
         if self._context is None:
@@ -215,6 +227,36 @@ class XScraper:
         visit(payload)
         return list(tweets.values())[:20]
 
+    @staticmethod
+    async def _tweets_from_dom(page: Page) -> list[Tweet]:
+        tweets: dict[str, Tweet] = {}
+        articles = page.locator('article[data-testid="tweet"]')
+        try:
+            await articles.first.wait_for(timeout=8000)
+        except Exception:
+            return []
+        n = min(await articles.count(), 20)
+        for index in range(n):
+            article = articles.nth(index)
+            try:
+                href = await article.locator('a[href*="/status/"]').first.get_attribute("href")
+                text = (await article.locator('[data-testid="tweetText"]').first.inner_text()).strip()
+            except Exception:
+                continue
+            if not href or not text:
+                continue
+            path = urlsplit(href if "://" in href else f"https://x.com{href}").path
+            parts = path.strip("/").split("/")
+            if (
+                len(parts) >= 3
+                and parts[1] == "status"
+                and parts[2].isdigit()
+                and re.fullmatch(r"[A-Za-z0-9_]{1,15}", parts[0])
+            ):
+                url = f"https://x.com/{parts[0]}/status/{parts[2]}"
+                tweets[url] = Tweet(text=text, url=url)
+        return list(tweets.values())
+
     async def _collect_tweets(
         self, url: str, for_you: bool = False, operations: tuple[str, ...] | None = None
     ) -> list[Tweet]:
@@ -225,12 +267,15 @@ class XScraper:
         page = await self._context.new_page()
         tweets: dict[str, Tweet] = {}
         received = asyncio.Event()
+        graphql_ops: list[str] = []
 
         async def on_response(response: Response) -> None:
             path = urlsplit(response.url).path
-            if "/graphql/" not in path or (
-                operations is not None and path.rsplit("/", 1)[-1].split("?")[0] not in operations
-            ):
+            if "/graphql/" not in path:
+                return
+            op = path.rsplit("/", 1)[-1].split("?")[0]
+            graphql_ops.append(op)
+            if operations is not None and op not in operations:
                 return
             try:
                 for tweet in self._tweets(await response.json()):
@@ -246,10 +291,20 @@ class XScraper:
             if for_you:
                 await page.get_by_role("tab", name="For you", exact=True).click()
             try:
-                await asyncio.wait_for(received.wait(), timeout=45)
+                await asyncio.wait_for(received.wait(), timeout=25)
             except TimeoutError:
-                if not tweets:
-                    raise
+                pass
+            if not tweets:
+                for tweet in await self._tweets_from_dom(page):
+                    tweets[tweet.url] = tweet
+            if not tweets:
+                logger.warning(
+                    "No tweets at %s title=%r graphql=%s",
+                    url,
+                    await page.title(),
+                    ",".join(graphql_ops) or "-",
+                )
+                raise TimeoutError(f"No tweets from {url}")
             return list(tweets.values())[:20]
         finally:
             page.remove_listener("response", on_response)

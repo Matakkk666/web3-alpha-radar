@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from scrapers.playwright_client import XScraper
-from scrapers.proxy_bridge import normalized_upstream, socks_needs_http_bridge
+from scrapers.proxy_bridge import normalized_upstream, proxy_host_allowed, socks_needs_http_bridge
 
 
 def following_payload(names):
@@ -43,6 +43,13 @@ class XScraperTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(socks_needs_http_bridge(raw))
             self.assertIsNone(XScraper._proxy())
         self.assertEqual(normalized_upstream(raw), "socks5://user:p%40ss@proxy.test:1080")
+
+    def test_proxy_only_forwards_x_hosts(self):
+        self.assertTrue(proxy_host_allowed("x.com"))
+        self.assertTrue(proxy_host_allowed("abs.twimg.com"))
+        self.assertTrue(proxy_host_allowed("api.twitter.com"))
+        self.assertFalse(proxy_host_allowed("cm.g.doubleclick.net"))
+        self.assertFalse(proxy_host_allowed("google.com"))
 
     def test_http_proxy_still_passed_to_chromium(self):
         with patch("scrapers.playwright_client.settings.proxy_url", "http://user:p%40ss@proxy.test:3128"):
@@ -100,6 +107,7 @@ class XScraperTests(unittest.IsolatedAsyncioTestCase):
         context.add_cookies = AsyncMock(side_effect=lambda cookies: events.append(("cookies", cookies)))
         context.new_page = AsyncMock(return_value=page)
         context.close = AsyncMock()
+        context.route = AsyncMock()
         browser = MagicMock()
         browser.new_context = AsyncMock(return_value=context)
         browser.close = AsyncMock()

@@ -20,6 +20,17 @@ _port: int | None = None
 _lock = asyncio.Lock()
 _connect_sem = asyncio.Semaphore(4)
 
+_X_HOSTS = frozenset({"x.com", "twitter.com", "t.co", "twimg.com"})
+_X_SUFFIXES = (".x.com", ".twitter.com", ".twimg.com", ".t.co", ".pscp.tv", ".periscope.tv")
+
+
+def proxy_host_allowed(host: str | None) -> bool:
+    """Only forward X/Twitter destinations through the SOCKS proxy."""
+    if not host:
+        return True
+    h = host.lower().rstrip(".")
+    return h in _X_HOSTS or any(h.endswith(s) for s in _X_SUFFIXES)
+
 
 def normalized_upstream(proxy_url: str) -> str:
     url = urlsplit(proxy_url)
@@ -73,7 +84,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, up
         host, port_s = target.rsplit(":", 1)
         dest_host = host.strip("[]")
         dest_port = int(port_s)
-        if dest_port not in {80, 443}:
+        if dest_port not in {80, 443} or not proxy_host_allowed(dest_host):
             writer.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
             await writer.drain()
             return
